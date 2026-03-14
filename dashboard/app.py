@@ -6,41 +6,49 @@ from prophet import Prophet
 st.title("🏦 Bank Credit Target System")
 st.subheader("Aylıq satış hədəfi proqnozu")
 
-conn = psycopg2.connect(
-    host="localhost",
-    database="bank_credit_db",
-    user="babeknasirov",
-    password=""
-)
-cur = conn.cursor()
+@st.cache_data
+def load_data():
+    conn = psycopg2.connect(
+        host="localhost",
+        database="bank_credit_db",
+        user="babeknasirov",
+        password=""
+    )
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT m.year, m.month, c.name as kanal,
+               SUM(m.actual_azn) as umumi_icra
+        FROM monthly_sales m
+        JOIN units u ON m.unit_id = u.id
+        JOIN channels c ON u.channel_id = c.id
+        GROUP BY m.year, m.month, c.name
+        ORDER BY m.year, m.month
+    """)
+    df = pd.DataFrame(cur.fetchall(), columns=[desc[0] for desc in cur.description])
+    cur.close()
+    conn.close()
+    df["ds"] = pd.to_datetime(df["year"].astype(str) + "-" + df["month"].astype(str) + "-01")
+    df["y"] = df["umumi_icra"]
+    return df
 
-cur.execute("""
-    SELECT m.year, m.month, c.name as kanal,
-           SUM(m.actual_azn) as umumi_icra
-    FROM monthly_sales m
-    JOIN units u ON m.unit_id = u.id
-    JOIN channels c ON u.channel_id = c.id
-    GROUP BY m.year, m.month, c.name
-    ORDER BY m.year, m.month
-""")
+@st.cache_data
+def get_forecast(kanal, df):
+    if kanal == "Ümumi Bank":
+        kanal_df = df.groupby("ds")["y"].sum().reset_index()
+    else:
+        kanal_df = df[df["kanal"] == kanal][["ds", "y"]]
+    model = Prophet()
+    model.fit(kanal_df)
+    future = model.make_future_dataframe(periods=6, freq="MS")
+    forecast = model.predict(future)
+    return forecast
 
-df = pd.DataFrame(cur.fetchall(), columns=[desc[0] for desc in cur.description])
-df["ds"] = pd.to_datetime(df["year"].astype(str) + "-" + df["month"].astype(str) + "-01")
-df["y"] = df["umumi_icra"]
+df = load_data()
 
 seçimlər = ["Ümumi Bank"] + list(df["kanal"].unique())
 kanal = st.selectbox("Kanal seçin:", seçimlər)
 
-if kanal == "Ümumi Bank":
-    kanal_df = df.groupby("ds")["y"].sum().reset_index()
-else:
-    kanal_df = df[df["kanal"] == kanal][["ds", "y"]]
-
-model = Prophet()
-model.fit(kanal_df)
-
-future = model.make_future_dataframe(periods=6, freq="MS")
-forecast = model.predict(future)
+forecast = get_forecast(kanal, df)
 
 st.subheader(f"{kanal} — növbəti 6 ay proqnozu")
 
